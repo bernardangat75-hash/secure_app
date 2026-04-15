@@ -1,0 +1,87 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # SAST - Semgrep
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+
+      # Dependency scan
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run dependency scan
+        run: pip-audit -r requirements.txt > dependency-report.txt
+
+      # Secret scan
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --report-path=gitleaks-report.json
+
+      # Upload scan results
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results
+          path: |
+            dependency-report.txt
+            gitleaks-report.json
+
+  build:
+    runs-on: ubuntu-latest
+    needs: scan   # 🔥 IMPORTANT: only runs if scan passes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Build Docker image
+      - name: Build Docker image
+        run: docker build -t secure-app:${{ github.sha }} .
+
+      # Container scan (Trivy)
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@v0.20.0
+        with:
+          image-ref: secure-app:${{ github.sha }}
+          format: table
+          output: trivy-report.txt
+
+      # Generate SBOM (Syft)
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: secure-app:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom.json
+
+      # Save artifacts
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            trivy-report.txt
+            sbom.json
+
+      # Mark trusted build
+      - name: Mark trusted build
+        run: echo "Trusted build for commit ${{ github.sha }}" > trusted.txt
+
+      - name: Upload trusted marker
+        uses: actions/upload-artifact@v4
+        with:
+          name: trusted-build
+          path: trusted.txt
